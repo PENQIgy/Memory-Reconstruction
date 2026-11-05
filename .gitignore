@@ -1,0 +1,13 @@
+# 敏感信息
+.env
+.venv/
+.idea/
+*.sqlite
+identifier.sqlite
+
+# 运行产生的临时文件
+run_logs.jsonl
+__pycache__/
+*.pyc
+long_code.py
+test_file.txt
