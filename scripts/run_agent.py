@@ -18,7 +18,7 @@ if sys.platform == "win32":
 from codemem.governor import Governor
 from pathlib import Path
 from typing import Any
-
+from codemem.subagent import SubAgent
 from codemem.utils.token_utils import TokenTracker
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -85,28 +85,37 @@ TOOLS = [
 def execute_tool(name: str, tool_input: dict[str, Any]) -> str:
     try:
         if name == "read_file":
-            return Path(tool_input["path"]).read_text()
+            # 强制使用 utf-8 读取，防止乱码崩溃
+            return Path(tool_input["path"]).read_text(encoding="utf-8", errors="replace")
+
         elif name == "write_file":
             Path(tool_input["path"]).parent.mkdir(parents=True, exist_ok=True)
-            Path(tool_input["path"]).write_text(tool_input["content"])
+            Path(tool_input["path"]).write_text(tool_input["content"], encoding="utf-8")
             return f"已写入 {tool_input['path']}"
+
         elif name == "run_shell":
-            result = subprocess.run(
-                tool_input["command"],
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                encoding="utf-8",  # 强制用 utf-8 解码
-                errors="replace"  # 遇到解析不了的乱码直接替换，不崩溃
-            )
-            # 安全获取 stdout 和 stderr（防止为 None）
-            stdout_str = result.stdout if result.stdout else ""
-            stderr_str = result.stderr if result.stderr else ""
-            output = stdout_str + stderr_str
-            return output if output.strip() else "(命令执行成功，无输出)"
+            try:
+                result = subprocess.run(
+                    tool_input["command"],
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    encoding="utf-8",
+                    errors="replace"
+                )
+                stdout_str = result.stdout if result.stdout else ""
+                stderr_str = result.stderr if result.stderr else ""
+                output = stdout_str + stderr_str
+                return output if output.strip() else "(命令执行成功，无输出)"
+            except subprocess.TimeoutExpired:
+                return "工具执行出错: 命令执行超时（超过15秒），请换一个更简单的命令。"
+            except Exception as e:
+                return f"工具执行出错: {type(e).__name__}: {e}"
+
         else:
             return f"未知工具: {name}"
+
     except Exception as e:
         return f"工具执行出错: {type(e).__name__}: {e}"
 
@@ -118,15 +127,16 @@ def run_agent(task: str, use_governor: bool = True) -> str:
 
     from codemem.governor import Governor
     governor = Governor()
-
+    subagent = SubAgent(client=client, model=MODEL)
     messages: list[dict] = [
-        {"role": "system", "content": "你是一个编码代理。使用提供的工具完成任务。"},
+        {"role": "system",
+         "content": "你是一个编码代理。运行在 Windows 系统上，请使用 dir, type 等基础 Windows 命令。严禁使用复杂的 for 循环、管道符 (|) 或多重命令连接符 (&&)。每次只能执行一个简单命令。"},
         {"role": "user", "content": task}
     ]
 
     print(f"[Agent] 任务: {task}")
     print(f"[Agent] 模型: {MODEL}")
-    print(f"[Agent] 治理层状态: {'开启 ✅' if use_governor else '关闭 ❌'}")
+    print(f"[Agent] 治理层状态: {'开启 ' if use_governor else '关闭 '}")
     print("=" * 60)
 
     for iteration in range(1, MAX_ITERATIONS + 1):
@@ -163,6 +173,22 @@ def run_agent(task: str, use_governor: bool = True) -> str:
             for tool_call in msg.tool_calls:
                 name = tool_call.function.name
                 args = json.loads(tool_call.function.arguments)
+                # 🌟 核心治理点：拦截复杂的 shell 搜索请求，派发给子代理！
+                if name == "run_shell":
+                    cmd = args.get("command", "")
+                    # 判定规则：如果是找文件、全局搜索、长输出命令，就派发
+                    if any(keyword in cmd for keyword in ["find", "grep", "cat", "head", "tail"]):
+                        print(f"  🚦 [Governor拦截] 发现重型探索命令: {cmd}")
+                        summary = subagent.explore(f"请在当前目录执行以下命令，并把找到的关键信息总结给我: {cmd}")
+
+                        # 把子代理的简短总结塞回给主上下文
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": "run_shell",
+                            "content": f"[子代理总结]: {summary}"
+                        })
+                        continue  # 跳过下面主代理自己的执行
 
                 print(f"  → 工具调用: {name}")
                 print(f"    参数: {json.dumps(args, ensure_ascii=False)[:200]}")
@@ -197,14 +223,10 @@ if __name__ == "__main__":
         sys.argv.remove("--no-gov")
 
     # 设计一个疯狂重复读取长文件的任务
-    task = """请执行以下任务：
-    1. 使用 read_file 读取 long_code.py。
-    2. 使用 run_shell 执行 echo "第一步完成"。
-    3. 再次使用 read_file 读取 long_code.py。
-    4. 使用 run_shell 执行 echo "第二步完成"。
-    5. 再次使用 read_file 读取 long_code.py。
-    注意：必须严格按步骤执行，不要跳步。"""
-
+    task = """请帮我分析这个项目的结构。
+    1. 执行 dir /b 查看当前根目录下的文件。
+    2. 读取 pyproject.toml 的内容。
+    3. 简单总结这个项目依赖了哪些库。"""
     # 将开关传给 run_agent 函数
     result = run_agent(task, use_governor=use_governor)
     print(f"\n[最终回复]\n{result}")

@@ -44,14 +44,30 @@ class Governor:
     def before_llm_call(self, messages: list[dict]) -> list[dict]:
         print(f"\n[Governor] 拦截到 {len(messages)} 条消息。")
 
-        # 🌟 新增：先进行文件折叠
+        # ==========================================
+        # 新增：强制截断单条过长的消息（防止撑爆 API 字符上限）
+        # ==========================================
+        for msg in messages:
+            if msg.get("role") == "tool" and isinstance(msg.get("content"), str):
+                if len(msg["content"]) > 5000:
+                    msg["content"] = msg["content"][:5000] + "\n...[系统提示: 该工具输出过长，已被治理层截断]..."
+
+        # 原有的文件折叠逻辑
         messages = self.collapse_file_reads(messages)
 
         if len(messages) <= self.max_messages:
-            print(f"  ✅ 消息数安全，无需裁剪。")
+            print(f"   消息数安全，无需裁剪。")
             return messages
 
-        print(f"  ✂️ 消息数超限 ({len(messages)} > {self.max_messages})，触发压缩！")
+
+        #  新增：先进行文件折叠
+        messages = self.collapse_file_reads(messages)
+
+        if len(messages) <= self.max_messages:
+            print(f"   消息数安全，无需裁剪。")
+            return messages
+
+        print(f"   消息数超限 ({len(messages)} > {self.max_messages})，触发压缩！")
 
         safe_messages = []
         other_messages = []
@@ -75,12 +91,12 @@ class Governor:
 
         new_messages = safe_messages.copy()
 
-        # 🌟 核心亮点：生成一条历史摘要，塞在历史消息前面
+        #  核心亮点：生成一条历史摘要，塞在历史消息前面
         if dropped_messages:
             summary_text = f"[历史摘要] 你之前已经处理了 {len(dropped_messages)} 条中间消息。请记住你正在完成任务，不要重复执行之前的步骤！"
             new_messages.append({"role": "user", "content": summary_text})
 
         new_messages.extend(recent_messages)
-        print(f"  ✅ 裁剪完成，保留 {len(new_messages)} 条核心消息（含 1 条摘要）。")
+        print(f"   裁剪完成，保留 {len(new_messages)} 条核心消息（含 1 条摘要）。")
 
         return new_messages

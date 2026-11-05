@@ -11,3 +11,4 @@ __pycache__/
 *.pyc
 long_code.py
 test_file.txt
+*.db
