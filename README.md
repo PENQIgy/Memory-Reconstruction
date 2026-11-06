@@ -27,3 +27,5 @@
 2. 运行对比测试：
    - 无治理版：`uv run python scripts/run_agent.py --no-gov`
    - 开启治理：`uv run python scripts/run_agent.py`
+  
+   - 已实现基于 SQLite 的跨会话长期记忆模块，支持用户偏好提取与复用。”
